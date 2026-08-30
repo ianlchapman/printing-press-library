@@ -74,6 +74,16 @@ func ValidateSearchBase(opts SearchOptions) error {
 	if _, err := mapSortBy(opts.SortBy); err != nil {
 		return err
 	}
+	if opts.TimeWindow != "" {
+		if _, _, err := parseTimeWindow(opts.TimeWindow); err != nil {
+			return err
+		}
+	}
+	if opts.ReturnTimeWindow != "" {
+		if _, _, err := parseTimeWindow(opts.ReturnTimeWindow); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -346,7 +356,7 @@ func buildOfferSegments(opts SearchOptions, depDate, retDate time.Time, tripType
 			if err != nil {
 				return nil, fmt.Errorf("segment %d date %q: %w", i+1, s.DepartureDate, err)
 			}
-			seg, err := buildOneSegment(opts, d, s.Origin, s.Destination, stops)
+			seg, err := buildOneSegment(opts, d, s.Origin, s.Destination, stops, opts.TimeWindow)
 			if err != nil {
 				return nil, fmt.Errorf("segment %d: %w", i+1, err)
 			}
@@ -355,13 +365,21 @@ func buildOfferSegments(opts SearchOptions, depDate, retDate time.Time, tripType
 		return segs, nil
 	}
 	var segments []any
-	outbound, err := buildOneSegment(opts, depDate, opts.Origin, opts.Destination, stops)
+	outbound, err := buildOneSegment(opts, depDate, opts.Origin, opts.Destination, stops, opts.TimeWindow)
 	if err != nil {
 		return nil, err
 	}
 	segments = append(segments, outbound)
 	if tripType == tripTypeRoundTrip {
-		inbound, err := buildOneSegment(opts, retDate, opts.Destination, opts.Origin, stops)
+		// PATCH(library): the return leg gets its own time window
+		// (ReturnTimeWindow) when set; otherwise it falls back to the shared
+		// TimeWindow, matching the prior behavior where one --time value
+		// applied to both legs.
+		returnWindow := opts.ReturnTimeWindow
+		if returnWindow == "" {
+			returnWindow = opts.TimeWindow
+		}
+		inbound, err := buildOneSegment(opts, retDate, opts.Destination, opts.Origin, stops, returnWindow)
 		if err != nil {
 			return nil, err
 		}
@@ -370,10 +388,10 @@ func buildOfferSegments(opts SearchOptions, depDate, retDate time.Time, tripType
 	return segments, nil
 }
 
-func buildOneSegment(opts SearchOptions, date time.Time, origin, dest string, stops int) ([]any, error) {
+func buildOneSegment(opts SearchOptions, date time.Time, origin, dest string, stops int, timeWindow string) ([]any, error) {
 	var timeField any
-	if opts.TimeWindow != "" {
-		earliest, latest, err := parseTimeWindow(opts.TimeWindow)
+	if timeWindow != "" {
+		earliest, latest, err := parseTimeWindow(timeWindow)
 		if err != nil {
 			return nil, err
 		}
@@ -508,7 +526,8 @@ func parseOffersResponse(body []byte, currency string) ([]Flight, error) {
 		return nil, fmt.Errorf("decoding inner payload: %w", err)
 	}
 
-	return flightsFromEmbeddedPayload(inner, currency), nil
+	flights, _ := flightsFromEmbeddedPayload(inner, currency)
+	return flights, nil
 }
 
 func parseOfferRow(row any, currency string) (Flight, bool) {
