@@ -264,6 +264,17 @@ durations, airlines, and leg details. No API key. No auth. Just results.`,
 			opts.DepartureDate = departureDate
 			opts.ReturnDate = returnDate
 			opts.Segments = segments
+			// PATCH(greptile review): mirror the batch path's --return-time
+			// preflight for the single-search form — otherwise a malformed
+			// value reports success on --dry-run and a generic error (not a
+			// usage error) on a real run, only surfacing deep in segment
+			// construction. Only applies when the search is actually a round
+			// trip; --return-time is documented as ignored otherwise.
+			if opts.ReturnDate != "" && opts.ReturnTimeWindow != "" {
+				if verr := gflights.ValidateTimeWindow(opts.ReturnTimeWindow); verr != nil {
+					return usageErr(verr)
+				}
+			}
 			if flags.dryRun {
 				fmt.Fprintf(cmd.OutOrStdout(), "gflights.Search(%s -> %s on %s)", opts.Origin, opts.Destination, opts.DepartureDate)
 				if opts.ReturnDate != "" {
