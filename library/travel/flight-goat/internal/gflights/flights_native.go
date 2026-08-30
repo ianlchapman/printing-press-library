@@ -84,10 +84,21 @@ func ValidateSearchBase(opts SearchOptions) error {
 	// shape) it's a round-trip-only knob, and this function validates the
 	// shared base options once for an entire --trip batch before any trip's
 	// shape is known — eagerly rejecting it here would reject a batch of
-	// pure one-way trips over a flag that would never be read for them. A
-	// malformed value still surfaces at segment-build time for any trip
-	// that's actually round-trip.
+	// pure one-way trips over a flag that would never be read for them.
+	// Callers that DO know a batch contains at least one round-trip trip
+	// should additionally call ValidateTimeWindow(opts.ReturnTimeWindow) —
+	// see primary.go's batch mode — so a malformed value still fails before
+	// any network call rather than mid-batch during segment construction.
 	return nil
+}
+
+// ValidateTimeWindow checks a "--time"/"--return-time" style "H-H" 24h
+// window string without requiring a full SearchOptions. Batch callers use
+// this to validate ReturnTimeWindow only when the batch actually contains a
+// round-trip trip (see ValidateSearchBase).
+func ValidateTimeWindow(tw string) error {
+	_, _, err := parseTimeWindow(tw)
+	return err
 }
 
 // searchNativeDirect is the post-krisukox native backend.

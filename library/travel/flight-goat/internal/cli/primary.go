@@ -208,6 +208,26 @@ durations, airlines, and leg details. No API key. No auth. Just results.`,
 				if verr := gflights.ValidateSearchBase(base); verr != nil {
 					return usageErr(verr)
 				}
+				// PATCH(greptile review): ReturnTimeWindow is round-trip-only
+				// and ValidateSearchBase deliberately skips it (a batch of pure
+				// one-way trips must not reject a --return-time it will never
+				// read). But when the batch DOES contain a round-trip trip, a
+				// malformed --return-time should still fail here — before any
+				// network call — rather than mid-batch during segment
+				// construction, which would run earlier trips' requests first
+				// and surface the error as an API failure (exit 5) instead of
+				// a usage error (exit 2).
+				if base.ReturnTimeWindow != "" {
+					for _, t := range trips {
+						if t.ReturnDate == "" {
+							continue
+						}
+						if verr := gflights.ValidateTimeWindow(base.ReturnTimeWindow); verr != nil {
+							return usageErr(verr)
+						}
+						break
+					}
+				}
 				if flags.dryRun {
 					fmt.Fprintf(cmd.OutOrStdout(), "flights batch: %d trips, pace %s", len(trips), pace)
 					// PATCH(review-2026-08-01): mirror the single-search
