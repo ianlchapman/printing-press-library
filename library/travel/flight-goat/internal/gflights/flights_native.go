@@ -79,11 +79,14 @@ func ValidateSearchBase(opts SearchOptions) error {
 			return err
 		}
 	}
-	if opts.ReturnTimeWindow != "" {
-		if _, _, err := parseTimeWindow(opts.ReturnTimeWindow); err != nil {
-			return err
-		}
-	}
+	// PATCH(greptile review): ReturnTimeWindow is deliberately not validated
+	// here. Unlike TimeWindow (which applies to every trip regardless of
+	// shape) it's a round-trip-only knob, and this function validates the
+	// shared base options once for an entire --trip batch before any trip's
+	// shape is known — eagerly rejecting it here would reject a batch of
+	// pure one-way trips over a flag that would never be read for them. A
+	// malformed value still surfaces at segment-build time for any trip
+	// that's actually round-trip.
 	return nil
 }
 
