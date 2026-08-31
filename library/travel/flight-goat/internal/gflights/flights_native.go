@@ -142,6 +142,28 @@ func searchNativeDirect(ctx context.Context, opts SearchOptions) (*SearchResult,
 		}
 	}
 
+	// PATCH(library): SelectOutbound's contract (round trip only, positive
+	// index) was previously enforced only by the CLI's cobra Args validator
+	// (primary.go) — a direct library caller could pass a negative index
+	// (silently ignored, since only opts.SelectOutbound > 0 gates the
+	// two-step flow) or combine it with multi-city (silently ignored, since
+	// the multi-city branch below returns before SelectOutbound is ever
+	// read) or one-way (previously reached fetchSelectedReturn and failed
+	// with a confusing "out of range" error instead of a clear one).
+	// Greptile review finding: validate here so gflights.Search enforces its
+	// own contract regardless of caller.
+	if opts.SelectOutbound < 0 {
+		return nil, fmt.Errorf("SelectOutbound must be >= 0 (got %d)", opts.SelectOutbound)
+	}
+	if opts.SelectOutbound > 0 {
+		if tripType == tripTypeMultiCity {
+			return nil, fmt.Errorf("SelectOutbound does not apply to multi-city (Segments) searches")
+		}
+		if tripType != tripTypeRoundTrip {
+			return nil, fmt.Errorf("SelectOutbound requires a round trip (ReturnDate set); got a one-way search")
+		}
+	}
+
 	// PATCH(library): Google's multi-city POST endpoint requires an
 	// authenticated Google session (SAPISID cookie + XSRF hash); anonymous
 	// POSTs return ErrorResponse regardless of token tweaks. flight-goat
@@ -191,6 +213,7 @@ func searchNativeDirect(ctx context.Context, opts SearchOptions) (*SearchResult,
 	body := "f.req=" + payload
 
 	note := ""
+	viaHTMLFallback := false
 	var flights []Flight
 	err = retryBlockedRPC(ctx, func() error {
 		respBody, err := postFlightsFrontendRPC(ctx, offersEndpoint, "shopping", body, currencyCode)
@@ -217,6 +240,7 @@ func searchNativeDirect(ctx context.Context, opts SearchOptions) (*SearchResult,
 		if err != nil {
 			return nil, fmt.Errorf("google flights RPC is blocked and the HTML fallback failed: %w", err)
 		}
+		viaHTMLFallback = true
 	case err != nil:
 		return nil, fmt.Errorf("parsing response: %w", err)
 	default:
@@ -234,19 +258,26 @@ func searchNativeDirect(ctx context.Context, opts SearchOptions) (*SearchResult,
 	}
 
 	// PATCH(library): unlike the HTML-embedded payload (which splits
-	// outbound/return across two buckets — see flightsFromEmbeddedPayload),
-	// the native RPC's GetShoppingResults response carries a single flat
-	// list here regardless of trip type: a plain round-trip request (no
-	// SelectOutbound) gets back outbound itineraries only, each already
-	// priced with Google's own auto-picked "cheapest return" baked in — no
-	// separate return-leg data exists pre-selection. So direction is tagged
-	// from the REQUEST shape, not any response bucket position. One-way
-	// results are left untagged (no direction concept applies).
-	if tripType == tripTypeRoundTrip {
+	// outbound/return across two buckets and is already tagged by
+	// searchViaHTML — see flightsFromEmbeddedPayload), the native RPC's
+	// GetShoppingResults response carries a single flat list here regardless
+	// of trip type: a plain round-trip request (no SelectOutbound) gets back
+	// outbound itineraries only, each already priced with Google's own
+	// auto-picked "cheapest return" baked in — no separate return-leg data
+	// exists pre-selection. So direction is tagged from the REQUEST shape,
+	// not any response bucket position — but only on the native RPC path.
+	// Greptile review finding: this block used to run unconditionally and
+	// stomped the HTML fallback's correct per-row outbound/return tagging,
+	// which let fetchSelectedReturn treat every row (including true return
+	// rows) as a selectable outbound.
+	switch {
+	case viaHTMLFallback:
+		// searchViaHTML already tagged Direction correctly; leave it alone.
+	case tripType == tripTypeRoundTrip:
 		for i := range flights {
 			flights[i].Direction = "outbound"
 		}
-	} else {
+	default:
 		for i := range flights {
 			flights[i].SelectionToken = ""
 		}
@@ -302,10 +333,24 @@ func searchNativeDirect(ctx context.Context, opts SearchOptions) (*SearchResult,
 // produced them; a BotGuard block here surfaces as an error rather than
 // silently falling back to a differently-shaped page fetch.
 func fetchSelectedReturn(ctx context.Context, opts SearchOptions, tripType int, depDate, retDate time.Time, currencyCode string, firstFlights []Flight) (*Flight, []Flight, error) {
-	if opts.SelectOutbound > len(firstFlights) {
-		return nil, nil, fmt.Errorf("--select-outbound %d out of range: this search returned %d outbound itineraries", opts.SelectOutbound, len(firstFlights))
+	// PATCH(library): firstFlights is "all outbound" only on the native RPC
+	// path (searchNativeDirect tags every row "outbound" uniformly there —
+	// see the comment above that loop). The HTML fallback path
+	// (searchViaHTML) can hand back a list that already concatenates
+	// outbound and return buckets. Filtering here — rather than indexing
+	// firstFlights directly — keeps an out-of-range or return-bucket index
+	// from ever picking a return itinerary and sending its reversed route
+	// as the "outbound" selection. Greptile review finding.
+	var outboundOnly []Flight
+	for _, f := range firstFlights {
+		if f.Direction == "outbound" {
+			outboundOnly = append(outboundOnly, f)
+		}
 	}
-	chosen := firstFlights[opts.SelectOutbound-1]
+	if opts.SelectOutbound > len(outboundOnly) {
+		return nil, nil, fmt.Errorf("--select-outbound %d out of range: this search returned %d outbound itineraries", opts.SelectOutbound, len(outboundOnly))
+	}
+	chosen := outboundOnly[opts.SelectOutbound-1]
 	if chosen.SelectionToken == "" {
 		return nil, nil, fmt.Errorf("selected outbound itinerary carries no Google selection token; retry the search or pick a different --select-outbound index")
 	}
