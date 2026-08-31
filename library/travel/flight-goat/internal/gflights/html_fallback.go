@@ -411,6 +411,21 @@ func searchViaHTML(ctx context.Context, opts SearchOptions, currencyCode string)
 	}
 	outbound := filterFlightsClientSide(append([]Flight(nil), flights[:outboundCount]...), outboundOpts)
 	inbound := filterFlightsClientSide(append([]Flight(nil), flights[outboundCount:]...), returnOpts)
+	// PATCH(library): tag direction from the already-established
+	// outboundCount boundary (see TestFlightsFromEmbeddedPayload_OutboundReturnSplit)
+	// rather than guessing from airport codes — round trip only; a one-way
+	// search has nothing in the return bucket so outbound/inbound collapse
+	// to the same untagged list. See gflights.go's SelectOutbound doc; the
+	// native RPC path (flights_native.go) has no equivalent bucket split and
+	// tags Direction itself from request shape instead.
+	if opts.ReturnDate != "" {
+		for i := range outbound {
+			outbound[i].Direction = "outbound"
+		}
+		for i := range inbound {
+			inbound[i].Direction = "return"
+		}
+	}
 	flights = append(outbound, inbound...)
 	note := htmlFallbackNote
 	if !sortFlightsClientSide(flights, opts.SortBy) {
